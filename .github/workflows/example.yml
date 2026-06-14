@@ -1,0 +1,122 @@
+name: Conservation Governance
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  # ──────────────────────────────────────────────
+  # 1. Conservation gate on PRs
+  # ──────────────────────────────────────────────
+  conservation-gate:
+    name: "Conservation Gate (γ + η ≤ C)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Conservation check
+        uses: SuperInstance/conservation-action@v1
+        with:
+          gamma: 0.6
+          eta: 0.4
+          fail-on-violation: true
+
+  # ──────────────────────────────────────────────
+  # 2. Dynamic γ from PR diff size
+  # ──────────────────────────────────────────────
+  dynamic-conservation:
+    name: "Dynamic Conservation (from diff)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Estimate coordination cost (γ) from diff
+        id: estimate
+        run: |
+          LINES=$(git diff --numstat origin/main...HEAD | awk '{added+=$1; removed+=$2} END {print added+removed}')
+          GAMMA=$(echo "scale=4; $LINES / 10000" | bc -l)
+          # Clamp to [0, 1]
+          if (( $(echo "$GAMMA > 1" | bc -l) )); then GAMMA=1; fi
+          echo "gamma=$GAMMA" >> "$GITHUB_OUTPUT"
+          echo "::notice::Computed γ=$GAMMA from $LINES changed lines"
+
+      - name: Estimate entropy (η) from config churn
+        id: entropy
+        run: |
+          CONFIG_CHANGES=$(git diff --name-only origin/main...HEAD | grep -cE '\.(json|ya?ml|toml|env)$' || true)
+          ETA=$(echo "scale=4; $CONFIG_CHANGES / 10" | bc -l)
+          if (( $(echo "$ETA > 1" | bc -l) )); then ETA=1; fi
+          echo "eta=$ETA" >> "$GITHUB_OUTPUT"
+          echo "::notice::Computed η=$ETA from $CONFIG_CHANGES config files changed"
+
+      - name: Conservation check
+        uses: SuperInstance/conservation-action@v1
+        with:
+          gamma: ${{ steps.estimate.outputs.gamma }}
+          eta: ${{ steps.entropy.outputs.eta }}
+          fail-on-violation: true
+
+  # ──────────────────────────────────────────────
+  # 3. Fleet status check
+  # ──────────────────────────────────────────────
+  fleet-status:
+    name: "Fleet Status Check"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check fleet health
+        run: |
+          echo "Checking fleet status..."
+          STATUS=$(curl -sf "${{ vars.FLEET_API_URL || 'https://fleet-dashboard-api.casey-digennaro.workers.dev' }}/status" || echo '{"healthy": false}')
+          HEALTHY=$(echo "$STATUS" | jq -r '.healthy // false')
+          if [ "$HEALTHY" != "true" ]; then
+            echo "::warning::Fleet not healthy — proceeding with caution"
+          else
+            echo "::notice::Fleet is healthy ✅"
+          fi
+
+      - name: Conservation check (fleet budget)
+        uses: SuperInstance/conservation-action@v1
+        with:
+          gamma: 0.3
+          eta: 0.2
+          fleet-api-url: ${{ vars.FLEET_API_URL || 'https://fleet-dashboard-api.casey-digennaro.workers.dev' }}
+
+  # ──────────────────────────────────────────────
+  # 4. Ternary validation of signal data
+  # ──────────────────────────────────────────────
+  signal-validation:
+    name: "Ternary Signal Validation"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        signal:
+          - gamma: 0.2
+            eta: 0.1
+          - gamma: 0.5
+            eta: 0.4
+          - gamma: 0.9
+            eta: 0.8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate signal (γ=${{ matrix.signal.gamma }}, η=${{ matrix.signal.eta }})
+        uses: SuperInstance/conservation-action@v1
+        with:
+          gamma: ${{ matrix.signal.gamma }}
+          eta: ${{ matrix.signal.eta }}
+          fail-on-violation: false
+
+      - name: Report
+        run: |
+          echo "Signal pair γ=${{ matrix.signal.gamma }} η=${{ matrix.signal.eta }} validated"

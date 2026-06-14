@@ -1,0 +1,36 @@
+name: 'SuperInstance Conservation Check'
+description: 'Enforce conservation law (γ + η ≤ C) governance in CI/CD'
+branding:
+  icon: 'shield'
+  color: 'blue'
+inputs:
+  gamma:
+    description: 'Gamma (γ) value — coordination cost'
+    required: true
+    default: '0.5'
+  eta:
+    description: 'Eta (η) value — entropy produced'
+    required: true
+    default: '0.5'
+  fail-on-violation:
+    description: 'Fail the job if conservation is violated'
+    required: false
+    default: 'true'
+  fleet-api-url:
+    description: 'Fleet dashboard API URL (optional)'
+    required: false
+    default: 'https://fleet-dashboard-api.casey-digennaro.workers.dev'
+runs:
+  using: 'composite'
+  steps:
+    - name: Conservation check
+      shell: bash
+      run: |
+        RESPONSE=$(echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"conservation_check","arguments":{"gamma":${{ inputs.gamma }},"eta":${{ inputs.eta }}}},"id":1}' | npx -y superinstance-mcp 2>/dev/null)
+        echo "$RESPONSE" | jq -r '.result.content[0].text' | jq .
+        VALID=$(echo "$RESPONSE" | jq -r '.result.content[0].text' | jq -r '.valid')
+        if [ "$VALID" != "true" ] && [ "${{ inputs.fail-on-violation }}" = "true" ]; then
+          echo "::error::Conservation law violated! γ + η > C"
+          exit 1
+        fi
+        echo "valid=$VALID" >> "$GITHUB_OUTPUT"

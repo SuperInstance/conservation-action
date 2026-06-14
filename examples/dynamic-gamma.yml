@@ -1,0 +1,77 @@
+# Dynamic γ from PR Diff Size
+#
+# Computes the coordination cost (γ) from the actual lines changed in a PR,
+# then runs the conservation check with the computed value.
+#
+# Usage: Reference this in your workflow or copy the relevant steps.
+
+name: Dynamic Conservation Check
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  dynamic-conservation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for accurate diff
+
+      - name: Estimate coordination cost (γ) from diff
+        id: estimate
+        run: |
+          # Count total lines changed (added + removed)
+          LINES=$(git diff --numstat origin/main...HEAD | awk '{added+=$1; removed+=$2} END {print added+removed}')
+          echo "Total changed lines: $LINES"
+
+          # γ = lines / 10000 (scales: 10k lines = γ of 1.0)
+          GAMMA=$(echo "scale=4; $LINES / 10000" | bc -l)
+
+          # Clamp to [0, 1]
+          if (( $(echo "$GAMMA > 1" | bc -l) )); then
+            GAMMA=1
+          fi
+          if (( $(echo "$GAMMA < 0" | bc -l) )); then
+            GAMMA=0
+          fi
+
+          echo "gamma=$GAMMA" >> "$GITHUB_OUTPUT"
+          echo "::notice::Computed γ=$GAMMA from $LINES changed lines"
+
+      - name: Estimate entropy (η) from config churn
+        id: entropy
+        run: |
+          # Count configuration files changed
+          CONFIG_CHANGES=$(git diff --name-only origin/main...HEAD | grep -cE '\.(json|ya?ml|toml|env|ini|conf)$' || echo 0)
+
+          # η = config_changes / 10 (scales: 10 config files = η of 1.0)
+          ETA=$(echo "scale=4; $CONFIG_CHANGES / 10" | bc -l)
+
+          # Clamp to [0, 1]
+          if (( $(echo "$ETA > 1" | bc -l) )); then
+            ETA=1
+          fi
+
+          echo "eta=$ETA" >> "$GITHUB_OUTPUT"
+          echo "::notice::Computed η=$ETA from $CONFIG_CHANGES config files changed"
+
+      - name: Conservation check
+        uses: SuperInstance/conservation-action@v1
+        with:
+          gamma: ${{ steps.estimate.outputs.gamma }}
+          eta: ${{ steps.entropy.outputs.eta }}
+          fail-on-violation: true
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Conservation Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| γ (coordination cost) | ${{ steps.estimate.outputs.gamma }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| η (entropy) | ${{ steps.entropy.outputs.eta }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| γ + η | $(echo "${{ steps.estimate.outputs.gamma }} + ${{ steps.entropy.outputs.eta }}" | bc -l) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Budget C | 1.0 |" >> "$GITHUB_STEP_SUMMARY"
